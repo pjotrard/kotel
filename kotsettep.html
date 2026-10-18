@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nastavení kotle</title>
+    <style>
+        body { font-family: sans-serif, Arial; margin: 20px; background: #f4f4f9; color: #333; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+        label { display: block; margin-top: 15px; font-weight: bold; }
+        input { width: 100%; padding: 10px; margin-top: 5px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+        button { background: #007bff; color: white; border: none; padding: 12px; width: 100%; border-radius: 4px; margin-top: 20px; font-size: 16px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #status { margin-top: 15px; font-weight: bold; text-align: center; white-space: pre-line; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Nastavení časovače kotle</h2>
+    
+    <label for="token">GitHub Token (PAT):</label>
+    <input type="password" id="token" placeholder="Zadejte váš GitHub token">
+
+    <label for="cas_od">Čas od:</label>
+    <input type="time" id="cas_od" required>
+
+    <label for="cas_do">Čas do:</label>
+    <input type="time" id="cas_do" required>
+
+    <label for="teplota">Teplota (°C, 10 – 21.5):</label>
+    <input type="number" id="teplota" min="10" max="21.5" step="0.1" placeholder="21.5" required>
+
+    <button onclick="ulozitHodnoty()">Uložit na GitHub</button>
+    <div id="status"></div>
+</div>
+
+<script>
+    const owner = "pjotrard";
+    const repo = "kotel";
+    const path = "casovac.old";
+    const branch = "main"; // Upravte na 'master', pokud používáte větev master
+
+    window.onload = function() {
+        if (localStorage.getItem('gh_token')) {
+            document.getElementById('token').value = localStorage.getItem('gh_token');
+        }
+        nactiData();
+    };
+
+    // Pomocná funkce: Převede desítkový čas (např. "17.32") na formát HH:MM ("17:32")
+    function desitkovyNaCasInput(hodnota) {
+        if (!hodnota) return "";
+        const casti = hodnota.trim().split(".");
+        let hod = casti[0].padStart(2, "0");
+        let min = casti[1] ? casti[1].padEnd(2, "0") : "00";
+        return `${hod}:${min}`;
+    }
+
+    // Pomocná funkce: Převede čas HH:MM ("17:32") na desítkový tvar ("17.32")
+    function casInputNaDesitkovy(casStr) {
+        const [h, m] = casStr.split(":");
+        return `${parseInt(h, 10)}.${m}`;
+    }
+
+    async function nactiData() {
+        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error("Chyba při načítání souboru z GitHubu.");
+            const data = await response.json();
+            
+            const content = decodeURIComponent(escape(atob(data.content)));
+            window.fileSha = data.sha;
+
+            // Očekávaný tvar: 1;čas_od;čas_do;1;teplota;8
+            const radek = content.trim().split("\n")[0];
+            if (radek) {
+                const casti = radek.split(";");
+                if (casti.length >= 6) {
+                    document.getElementById('cas_od').value = desitkovyNaCasInput(casti[1]);
+                    document.getElementById('cas_do').value = desitkovyNaCasInput(casti[2]);
+                    document.getElementById('teplota').value = parseFloat(casti[4]);
+                }
+            }
+        } catch (error) {
+            zobrazStatus("Chyba načtení: " + error.message, "red");
+        }
+    }
+
+    function validujVstupy(casOd, casDo, teplota) {
+        if (!casOd || !casDo || isNaN(teplota)) {
+            return "Vyplňte prosím všechna pole.";
+        }
+
+        // Převod na minuty pro spolehlivé porovnání časů
+        const [hOd, mOd] = casOd.split(":").map(Number);
+        const [hDo, mDo] = casDo.split(":").map(Number);
+        
+        const minutyOd = hOd * 60 + mOd;
+        const minutyDo = hDo * 60 + mDo;
+
+        if (minutyDo <= minutyOd) {
+            return "Čas DO musí být větší než čas OD.";
+        }
+
+        if (teplota < 10.0 || teplota > 21.5) {
+            return "Teplota musí být v rozmezí 10.0 °C až 21.5 °C.";
+        }
+
+        return null; // Bez chyby
+    }
+
+    async function ulozitHodnoty() {
+        const token = document.getElementById('token').value.trim();
+        if (!token) {
+            alert("Zadejte prosím váš GitHub Token.");
+            return;
+        }
+
+        const casOd = document.getElementById('cas_od').value;
+        const casDo = document.getElementById('cas_do').value;
+        const teplota = parseFloat(document.getElementById('teplota').value);
+
+        // Validace zadaných hodnot
+        const chybaValidace = validujVstupy(casOd, casDo, teplota);
+        if (chybaValidace) {
+            zobrazStatus(chybaValidace, "red");
+            return;
+        }
+
+        // Uložení tokenu do localStorage
+        localStorage.setItem('gh_token', token);
+
+        // Převod časů na desítkový formát s tečkou
+        const casOdFormatted = casInputNaDesitkovy(casOd);
+        const casDoFormatted = casInputNaDesitkovy(casDo);
+
+        // Sestavení datového řádku: 1;čas_od;čas_do;1;teplota;8
+        const novyRadek = `1;${casOdFormatted};${casDoFormatted};1;${teplota};8\n`;
+        const encodedContent = btoa(unescape(encodeURIComponent(novyRadek)));
+
+        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+        zobrazStatus("Ukládám na GitHub...", "blue");
+
+        try {
+            const response = await fetch(url, {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `token ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message: "Aktualizace časovače kotle z mobilu",
+                    content: encodedContent,
+                    sha: window.fileSha,
+                    branch: branch
+                })
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.message || "Uložení selhalo.");
+            }
+
+            const result = await response.json();
+            window.fileSha = result.content.sha;
+            zobrazStatus("Uloženo v pořádku!", "green");
+        } catch (error) {
+            zobrazStatus("Chyba při ukládání: " + error.message, "red");
+        }
+    }
+
+    function zobrazStatus(zprava, barva) {
+        const statusEl = document.getElementById('status');
+        statusEl.innerText = zprava;
+        statusEl.style.color = barva;
+    }
+</script>
+
+</body>
+</html>
