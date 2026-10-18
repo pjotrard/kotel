@@ -39,7 +39,7 @@
     const owner = "pjotrard";
     const repo = "kotel";
     const path = "casovac.old";
-    const branch = "main"; // Upravte na 'master', pokud používáte větev master
+    const branch = "main"; // Upravte podle vaší větve (např. master)
 
     window.onload = function() {
         if (localStorage.getItem('gh_token')) {
@@ -48,7 +48,6 @@
         nactiData();
     };
 
-    // Pomocná funkce: Převede desítkový čas (např. "17.32") na formát HH:MM ("17:32")
     function desitkovyNaCasInput(hodnota) {
         if (!hodnota) return "";
         const casti = hodnota.trim().split(".");
@@ -57,32 +56,35 @@
         return `${hod}:${min}`;
     }
 
-    // Pomocná funkce: Převede čas HH:MM ("17:32") na desítkový tvar ("17.32")
     function casInputNaDesitkovy(casStr) {
         const [h, m] = casStr.split(":");
         return `${parseInt(h, 10)}.${m}`;
     }
 
+    function zpracujAObnovFormular(obsahText) {
+        const radek = obsahText.trim().split("\n")[0];
+        if (radek) {
+            const casti = radek.split(";");
+            if (casti.length >= 6) {
+                document.getElementById('cas_od').value = desitkovyNaCasInput(casti[1]);
+                document.getElementById('cas_do').value = desitkovyNaCasInput(casti[2]);
+                document.getElementById('teplota').value = parseFloat(casti[4]);
+            }
+        }
+    }
+
     async function nactiData() {
-        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+        // Přidání časového razítka proti kešování starých dat při otevření stránky
+        const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}?t=${new Date().getTime()}`;
         try {
-            const response = await fetch(url);
+            const response = await fetch(url, { cache: "no-store" });
             if (!response.ok) throw new Error("Chyba při načítání souboru z GitHubu.");
             const data = await response.json();
             
             const content = decodeURIComponent(escape(atob(data.content)));
             window.fileSha = data.sha;
 
-            // Očekávaný tvar: 1;čas_od;čas_do;1;teplota;8
-            const radek = content.trim().split("\n")[0];
-            if (radek) {
-                const casti = radek.split(";");
-                if (casti.length >= 6) {
-                    document.getElementById('cas_od').value = desitkovyNaCasInput(casti[1]);
-                    document.getElementById('cas_do').value = desitkovyNaCasInput(casti[2]);
-                    document.getElementById('teplota').value = parseFloat(casti[4]);
-                }
-            }
+            zpracujAObnovFormular(content);
         } catch (error) {
             zobrazStatus("Chyba načtení: " + error.message, "red");
         }
@@ -93,7 +95,6 @@
             return "Vyplňte prosím všechna pole.";
         }
 
-        // Převod na minuty pro spolehlivé porovnání časů
         const [hOd, mOd] = casOd.split(":").map(Number);
         const [hDo, mDo] = casDo.split(":").map(Number);
         
@@ -108,7 +109,7 @@
             return "Teplota musí být v rozmezí 10.0 °C až 21.5 °C.";
         }
 
-        return null; // Bez chyby
+        return null;
     }
 
     async function ulozitHodnoty() {
@@ -122,21 +123,17 @@
         const casDo = document.getElementById('cas_do').value;
         const teplota = parseFloat(document.getElementById('teplota').value);
 
-        // Validace zadaných hodnot
         const chybaValidace = validujVstupy(casOd, casDo, teplota);
         if (chybaValidace) {
             zobrazStatus(chybaValidace, "red");
             return;
         }
 
-        // Uložení tokenu do localStorage
         localStorage.setItem('gh_token', token);
 
-        // Převod časů na desítkový formát s tečkou
         const casOdFormatted = casInputNaDesitkovy(casOd);
         const casDoFormatted = casInputNaDesitkovy(casDo);
 
-        // Sestavení datového řádku: 1;čas_od;čas_do;1;teplota;8
         const novyRadek = `1;${casOdFormatted};${casDoFormatted};1;${teplota};8\n`;
         const encodedContent = btoa(unescape(encodeURIComponent(novyRadek)));
 
@@ -164,8 +161,27 @@
             }
 
             const result = await response.json();
+            
+            // Aktualizace SHA souboru pro případný další zápis bez nutnosti reloadu
             window.fileSha = result.content.sha;
-            zobrazStatus("Uloženo v pořádku!", "green");
+
+            // Ověření a načtení čerstvých dat přímo přes SHA nového commitu
+            const commitSha = result.commit && result.commit.sha;
+            if (commitSha) {
+                const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}/${path}`;
+                const rawResp = await fetch(rawUrl, { cache: "no-store" });
+                if (rawResp.ok) {
+                    const updatedText = await rawResp.text();
+                    console.log("Updated file (by commit):", updatedText);
+                    
+                    // Aktualizace formulářových polí přímo z čerstvě zapsaného commitu
+                    zpracujAObnovFormular(updatedText);
+                } else {
+                    console.warn("Could not load raw by commit:", rawResp.status);
+                }
+            }
+
+            zobrazStatus("Uloženo v pořádku a data ověřena!", "green");
         } catch (error) {
             zobrazStatus("Chyba při ukládání: " + error.message, "red");
         }
